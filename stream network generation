@@ -1,0 +1,59 @@
+// 1. AOI & TARGET POINT SETUP
+var aoi = ee.FeatureCollection("projects/remote-sensing-task-1/assets/FinalStudy_area");
+var targetLakePoint = ee.Geometry.Point([86.92742516742096, 27.898225176439844]);
+
+Map.centerObject(aoi, 12);
+Map.addLayer(aoi, {color: 'FF0000'}, 'Study Area (Imja)', false, 0.4);
+
+// 2. EXTRACT EXACT SINGLE WATERSHED BASIN
+var basins = ee.FeatureCollection('WWF/HydroSHEDS/v1/Basins/hybas_12');
+
+// FIX: Filter strictly by the lake point to get ONLY the 1 correct basin, cast as Feature
+var imjaWatershed = ee.Feature(basins.filterBounds(targetLakePoint).first());
+
+// Calculate the vector area safely with 1-meter error tolerance
+var watershedAreaSqKm = ee.Number(imjaWatershed.geometry().area(1)).divide(1e6);
+
+// Visualize the clean Catchment Boundary
+Map.addLayer(ee.Image().paint(ee.FeatureCollection([imjaWatershed]), 1, 2), 
+  {palette: ['#8A2BE2']}, 
+  'Imja Catchment Basin Boundary', true);
+
+// 3. EXTRACT RIVER / MELTWATER NETWORK (MERIT Hydro)
+var meritHydro = ee.Image("MERIT/Hydro/v1_0_1");
+var flowAccumulation = meritHydro.select('upa'); // Upstream Area in sq km
+
+var streamThreshold = 2.0; // sq km threshold for stream formation
+var streamNetwork = flowAccumulation.updateMask(flowAccumulation.gte(streamThreshold));
+
+// FIX: Clip streams to the AOI or leave unclipped near edges to prevent alignment breakage
+var imjaStreams = streamNetwork.clipToCollection(ee.FeatureCollection([imjaWatershed]));
+
+// Visualize the Stream Network
+Map.addLayer(imjaStreams, {
+  min: 2, 
+  max: 50, 
+  palette: ['#00FFFF', '#0000FF', '#00008B']
+}, 'Meltwater Drainage Network', true);
+
+// 4. HYDRO-Spatially Exact Drainage Area Calculation (With Channel Snapping)
+// Create a 300-meter buffer around the point to guarantee we intersect the main stream channel
+var pointBuffer = targetLakePoint.buffer(300);
+
+// Find the MAXIMUM upstream area pixel inside that buffer zone
+var exactDrainageArea = flowAccumulation.reduceRegion({
+  reducer: ee.Reducer.max(),
+  geometry: pointBuffer,
+  scale: 90,
+  maxPixels: 1e6
+}).get('upa');
+
+// 5. PRINT COMPARATIVE RESULTS
+print('--- WATERSHED AREA ANALYSIS ---');
+print('1. HydroSHEDS Vector Basin Area (sq km):', watershedAreaSqKm);
+print('2. MERIT Hydro Exact Pixel Drainage Area at Lake (sq km):', exactDrainageArea);
+
+// 6. ADD ELEVATION CONTEXT
+var elevation = meritHydro.select('elv').clipToCollection(ee.FeatureCollection([imjaWatershed]));
+var hillshade = ee.Terrain.hillshade(elevation);
+Map.addLayer(hillshade, {min: 0, max: 255}, 'Terrain Hillshade', false, 0.5);
