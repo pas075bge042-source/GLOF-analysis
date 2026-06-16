@@ -1,0 +1,111 @@
+var aoi = ee.FeatureCollection("projects/remote-sensing-task-1/assets/FinalStudy_area");
+
+Map.centerObject(aoi, 12);
+Map.addLayer(aoi, {color: 'FF0000'}, 'Study Area: Imja Lake', true, 0.4);
+
+// 2. TIME RANGE 
+var startYear = 1990;
+var endYear   = 2025;
+
+// 3. HELPER FUNCTIONS
+function maskClouds(image) {
+  var qa   = image.select('QA_PIXEL');
+  var mask = qa.bitwiseAnd(1 << 3).eq(0)    // no cloud shadow
+        .and(qa.bitwiseAnd(1 << 4).eq(0));   // no cloud
+  return image.updateMask(mask);
+}
+
+function lstFromL57(image) {
+  image = maskClouds(image);
+  var lst = image.select('ST_B6')
+    .resample('bilinear')
+    .multiply(0.00341802).add(149.0)
+    .subtract(273.15)                
+    .rename('LST');
+  return lst.copyProperties(image, ['system:time_start']);
+}
+
+function lstFromL89(image) {
+  image = maskClouds(image);
+  var lst = image.select('ST_B10')
+    .resample('bilinear')
+    .multiply(0.00341802).add(149.0)
+    .subtract(273.15)                
+    .rename('LST');
+  return lst.copyProperties(image, ['system:time_start']);
+}
+
+// 4. LOAD & MERGE LANDSAT COLLECTIONS
+var l5 = ee.ImageCollection('LANDSAT/LT05/C02/T1_L2')
+  .filterBounds(aoi)
+  .filter(ee.Filter.calendarRange(3, 7, 'month'))
+  .map(lstFromL57);
+
+var l7 = ee.ImageCollection('LANDSAT/LE07/C02/T1_L2')
+  .filterBounds(aoi)
+  .filter(ee.Filter.calendarRange(3, 7, 'month'))
+  .map(lstFromL57);
+
+var l8 = ee.ImageCollection('LANDSAT/LC08/C02/T1_L2')
+  .filterBounds(aoi)
+  .filter(ee.Filter.calendarRange(3, 7, 'month'))
+  .map(lstFromL89);
+
+var l9 = ee.ImageCollection('LANDSAT/LC09/C02/T1_L2')
+  .filterBounds(aoi)
+  .filter(ee.Filter.calendarRange(3, 7, 'month'))
+  .map(lstFromL89);
+
+var allLST = l5.merge(l7).merge(l8).merge(l9);
+
+// 5. ANNUAL MEAN COMPOSITES
+var years = ee.List.sequence(startYear, endYear);
+
+var annualLST = ee.ImageCollection.fromImages(
+  years.map(function(y) {
+    y = ee.Number(y);
+    var start  = ee.Date.fromYMD(y, 3, 1);
+    var end    = ee.Date.fromYMD(y, 8, 1);
+    var yearly = allLST.filterDate(start, end);
+    
+    var rawMean = yearly.mean();
+    var neighborhoodMean = rawMean.focalMean({radius: 3, units: 'pixels'});
+    var filledMean = rawMean.unmask(neighborhoodMean);
+    
+    return filledMean
+      .set('year', y)
+      .set('system:time_start', ee.Date.fromYMD(y, 6, 1).millis())
+      .set('num_scenes', yearly.size());
+  })
+);
+
+// 6. LINE CHART – Annual Mean LST for Imja Lake
+var chart = ui.Chart.image.series({
+  imageCollection: annualLST.select('LST'),
+  region: aoi,
+  reducer: ee.Reducer.mean(),
+  scale: 100,
+  xProperty: 'system:time_start'
+})
+.setChartType('LineChart')
+.setOptions({
+  title: 'Annual Mean Land Surface Temperature (' + startYear + ' – ' + endYear + ') | Imja Lake',
+  vAxis: { title: 'LST (°C)', titleTextStyle: {italic: false, bold: true} },
+  hAxis: { title: 'Year', format: 'yyyy', titleTextStyle: {italic: false, bold: true} },
+  lineWidth: 2,
+  pointSize: 5,
+  colors: ['#e63946'],
+  curveType: 'function',
+  trendlines: {
+    0: { type: 'linear', color: '#457b9d', lineWidth: 2, opacity: 0.6, showR2: true, visibleInLegend: true }
+  }
+});
+
+print(chart);
+
+// 7. MAP LAYER
+var recentLST = annualLST.sort('system:time_start', false).first();
+Map.addLayer(recentLST.select('LST').clip(aoi), {
+  min: -15, max: 20, 
+  palette: ['0000FF', '00BFFF', '00FF80', 'FFFF00', 'FF8000', 'FF0000']
+}, 'Most Recent Annual Mean LST (°C) - Imja Lake');
