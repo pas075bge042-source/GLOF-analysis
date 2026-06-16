@@ -1,0 +1,150 @@
+# MANN-KENDALL TREND ANALYSIS  |  Imja Region  |  1990–2025
+# Primary test : Hamed-Rao Modified MK Test
+# Robustness   : Trend-Free Pre-Whitening (glacier lake only)
+# ============================================================
+
+# ── 0. Install library ──────────────────────────────────────
+!pip install pymannkendall --quiet
+
+# ── 1. Imports ──────────────────────────────────────────────
+import numpy as np
+import pandas as pd
+import pymannkendall as mk
+
+# ── 2. Dataset (July annual composites, 1990–2025) ──────────
+years = list(range(1990, 2026))
+
+air_temp = [
+     13.60, 13.49, 13.32, 13.52, 13.90, 13.91, 13.91, 13.02,
+     14.11, 14.29, 13.51, 13.92, 13.71, 13.53, 13.72, 13.99,
+     14.29, 14.10, 14.05, 14.55, 14.57, 13.68, 13.73, 14.04,
+     13.99, 13.78, 14.48, 14.39, 13.94, 13.85, 13.78, 14.42,
+     14.43, 14.67, 14.82, 14.82
+]
+
+lst = [
+     -4.301, -3.736, -3.938,  0.069,  2.191, -8.783, -0.100,  1.884,
+      2.793,  4.003,  4.205,  3.690,  0.395,  2.203,  5.166,  1.572,
+      0.695,  2.053,  2.836,  2.106,  1.468,  1.377,  3.733,  2.085,
+     -3.848, -2.727,  4.336,  3.951,  4.208,  0.682, -0.049, -2.863,
+      0.785, -3.435, -0.282,  2.845
+]
+
+glacier_lake_area = [
+     0.789, 0.789, 0.824, 0.796, 0.540, 0.696, 0.739, 0.677,
+     0.338, 0.714, 0.806, 0.874, 0.895, 0.944, 0.963, 0.926,
+     0.887, 0.880, 0.906, 1.094, 1.124, 1.127, 0.433, 0.484,
+     1.309, 1.287, 1.272, 1.349, 1.314, 1.527, 1.581, 1.591,
+     1.606, 1.560, 1.495, 1.337
+]
+
+df = pd.DataFrame({
+     'Year'              : years,
+     'Air_Temp'          : air_temp,
+     'LST'               : lst,
+     'Glacier_Lake_Area' : glacier_lake_area
+})
+
+variables = {
+     'Air Temperature (°C)'          : 'Air_Temp',
+     'Land Surface Temperature (°C)' : 'LST',
+     'Glacier Lake Area (km²)'       : 'Glacier_Lake_Area',
+}
+
+alpha = 0.05
+N     = len(years)
+
+# ── 3. Helper : lag-1 autocorrelation ───────────────────────
+def lag1_autocorr(series):
+    s    = np.array(series)
+    mean = s.mean()
+    return np.sum((s[:-1] - mean) * (s[1:] - mean)) / np.sum((s - mean) ** 2)
+
+# ── 4. Descriptive statistics ────────────────────────────────
+print("=" * 65)
+print("  DESCRIPTIVE STATISTICS (1990–2025, n = 36)")
+print("=" * 65)
+for name, col in variables.items():
+    s   = df[col]
+    r1  = lag1_autocorr(s)
+    idx_min = s.idxmin()
+    idx_max = s.idxmax()
+    print(f"\n{name}")
+    print(f"  Mean   : {s.mean():.4f}")
+    print(f"  Std    : {s.std():.4f}")
+    print(f"  Min    : {s.min():.4f}  (Year: {df.loc[idx_min, 'Year']})")
+    print(f"  Max    : {s.max():.4f}  (Year: {df.loc[idx_max, 'Year']})")
+    print(f"  Lag-1 r: {r1:.4f}  {'<-- high autocorrelation' if abs(r1) > 0.5 else ''}")
+
+# ── 5. Primary MK test : Hamed-Rao Modified ─────────────────
+print("\n\n" + "=" * 65)
+print("  PRIMARY TEST : HAMED-RAO MODIFIED MK  (alpha = 0.05)")
+print("  Corrects for serial autocorrelation across all sig. lags")
+print("=" * 65)
+
+for name, col in variables.items():
+    r1  = lag1_autocorr(df[col])
+    res = mk.hamed_rao_modification_test(df[col], alpha=alpha)
+
+    print(f"\n--- {name} ---")
+    print(f"  Lag-1 autocorrelation : {r1:.4f}")
+    print(f"  Detected trend        : {res.trend.upper()}")
+    print(f"  Significant (h)       : {res.h}  (alpha = {alpha})")
+    print(f"  p-value               : {res.p:.5f}")
+    print(f"  z-statistic           : {res.z:.5f}")
+    print(f"  Kendall's Tau         : {res.Tau:.5f}")
+    print(f"  Sen's Slope           : {res.slope:.5f} units/year")
+    print(f"  Intercept             : {res.intercept:.5f}")
+
+# ── 6. Robustness check : Trend-Free Pre-Whitening ──────────
+#    Applied to Glacier Lake Area only (lag-1 r = 0.792).
+#    TFPW removes the trend before pre-whitening, preventing
+#    the trend signal from being absorbed into AR(1) removal.
+print("\n\n" + "=" * 65)
+print("  ROBUSTNESS CHECK : TREND-FREE PRE-WHITENING MK")
+print("  Applied to: Glacier Lake Area  (lag-1 r = 0.792)")
+print("=" * 65)
+
+res_tfpw = mk.trend_free_pre_whitening_modification_test(
+    df['Glacier_Lake_Area'], alpha=alpha
+)
+print(f"\n  Detected trend  : {res_tfpw.trend.upper()}")
+print(f"  Significant (h) : {res_tfpw.h}")
+print(f"  p-value         : {res_tfpw.p:.5f}")
+print(f"  z-statistic     : {res_tfpw.z:.5f}")
+print(f"  Kendall's Tau   : {res_tfpw.Tau:.5f}")
+print(f"  Sen's Slope     : {res_tfpw.slope:.5f} km²/year")
+print(f"  Intercept       : {res_tfpw.intercept:.5f}")
+
+# ── 7. Full comparison table across all four applicable tests ─
+print("\n\n" + "=" * 65)
+print("  COMPARISON TABLE — ALL APPLICABLE TESTS")
+print("=" * 65)
+
+tests = {
+    'Original MK'         : mk.original_test,
+    'Hamed-Rao (primary)' : mk.hamed_rao_modification_test,
+    'Yue-Wang'            : mk.yue_wang_modification_test,
+    'TFPW'                : mk.trend_free_pre_whitening_modification_test,
+}
+
+header = f"{'Test':<22} {'Trend':<12} {'p-value':<10} {'Tau':<8} {'Slope':<10}"
+for name, col in variables.items():
+    print(f"\n  {name}")
+    print("  " + "-" * 60)
+    print(f"  {header}")
+    print("  " + "-" * 60)
+    for test_name, test_fn in tests.items():
+        r = test_fn(df[col], alpha=alpha)
+        sig = "*" if r.h else ""
+        print(f"  {test_name:<22} {r.trend:<12} {r.p:<10.5f} {r.Tau:<8.4f} {r.slope:<10.5f} {sig}")
+    print()
+
+print("  * = statistically significant at alpha = 0.05")
+print("\n  Recommended citation:")
+print("  Hamed, K.H. & Rao, A.R. (1998). A modified Mann-Kendall")
+print("  trend test for autocorrelated data. Journal of Hydrology,")
+print("  204(1-4), 182-196.")
+print("  Yue, S. & Wang, C.Y. (2002). Applicability of pre-whitening")
+print("  to eliminate the influence of serial correlation on the")
+print("  Mann-Kendall test. Water Resources Research, 38(6), 4-1.")
