@@ -1,0 +1,65 @@
+// 1. AOI & TARGET POINT SETUP
+var aoi = ee.FeatureCollection("projects/remote-sensing-task-1/assets/FinalStudy_area");
+var targetLakePoint = ee.Geometry.Point([86.92742516742096, 27.898225176439844]);
+
+Map.centerObject(aoi, 13);
+
+// 2. LOAD SENTINEL-2 IMAGERY (Strict Post-Monsoon Window for Clear Ice-Free Water)
+var s2 = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+  .filterBounds(aoi)
+  .filterDate('2021-10-01', '2021-11-30') // Post-monsoon: Clear skies, no lake ice
+  .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 10))
+  .median()
+  .clip(aoi);
+
+// 3. EXTRACT WATER USING NDWI & NIR CEILING (Safely isolates water from snow)
+var ndwi = s2.normalizedDifference(['B3', 'B8']).rename('NDWI');
+var nir = s2.select('B8');
+
+// Glacial water has high NDWI, but snow is highly reflective in NIR (B8) whereas water is dark.
+var waterMask = ndwi.gt(0.15)
+  .and(nir.lt(1500)) // Explicitly cuts out bright glacier snow and ice
+  .selfMask();
+
+// 4. VECTORIZE THE LAKES (Fixed Projection Bug)
+var lakesVector = waterMask.reduceToVectors({
+  geometry: aoi,
+  crs: 'EPSG:32645', // Forced local UTM Zone 45N projection for true 10m scaling
+  scale: 10,
+  geometryType: 'polygon',
+  eightConnected: true,
+  labelProperty: 'water',
+  reducer: ee.Reducer.countEvery(),
+  maxPixels: 1e8
+});
+
+// 5. CALCULATE AREA AND ESTIMATE VOLUME
+var lakesWithVolume = lakesVector.map(function(feat) {
+  var area_m2 = feat.geometry().area(1); // 1-meter max error tolerance
+  
+  // Apply Huggel et al. (2002) formula: Volume = 0.104 * (Area ^ 1.42)
+  var volume_m3 = ee.Number(0.104).multiply(area_m2.pow(1.42));
+  
+  return feat.set({
+    'Area_m2': area_m2,
+    'Volume_m3': volume_m3,
+    'Area_km2': area_m2.divide(1e6) // Helpful conversion for reports
+  });
+}).filter(ee.Filter.gt('Area_m2', 5000)); // Filter out minor noise
+
+// 6. ISOLATE YOUR SPECIFIC LAKE
+var mySpecificLake = ee.Feature(lakesWithVolume.filterBounds(targetLakePoint).first());
+var myAreaM2 = mySpecificLake.get('Area_m2');
+var myAreaKm2 = mySpecificLake.get('Area_km2');
+var myVolumeM3 = mySpecificLake.get('Volume_m3');
+
+// 7. PRINT SPECIFIC RESULTS
+print('--- IMJA TARGET LAKE DATA (2021) ---');
+print('Surface Area (sq meters):', myAreaM2);
+print('Surface Area (sq kilometers):', myAreaKm2);
+print('Estimated Volume (cubic meters):', myVolumeM3);
+
+// 8. VISUALIZE RESULTS
+Map.addLayer(s2, {bands: ['B4', 'B3', 'B2'], min: 0, max: 3000}, 'True Color (S2 Post-Monsoon)', true);
+Map.addLayer(waterMask, {palette: ['0000FF']}, 'Water Mask Base', false);
+Map.addLayer(mySpecificLake, {color: '00FFFF'}, 'Imja Lake Boundary Vector');
